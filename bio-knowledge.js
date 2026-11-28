@@ -101,10 +101,12 @@ export const ChemicalResolver = {
         return key&&(` ${normalized} `).includes(` ${key} `);
       }))||null;
   },
+  /* Extracts a single compound topic from common direct-lookup questions without sending the full chat. */
   extractCandidate(question) {
-    const match=String(question).trim().match(/^(?:what\s+(?:is|are)|what's|tell\s+me\s+about|explain|formula\s+for|chemical\s+formula\s+of|identify)\s+(?:the\s+)?(?:chemical\s+)?(.+?)[?.!]*$/i);
+    const match=String(question).trim().match(/^(?:what\s+(?:is|are)|what's|tell\s+me\s+about|explain|formula\s+for|chemical\s+formula\s+of|molecular\s+(?:formula|weight)\s+(?:of|for)|(?:properties|structure)\s+of|identify|what\s+does)\s+(?:the\s+)?(?:chemical\s+)?(.+?)[?.!]*$/i);
     if(!match)return null;
-    const candidate=match[1].replace(/\b(formula|molecular weight|structure|chemical)\b/ig,"").trim();
+    const candidate=match[1].replace(/\b(?:formula|molecular weight|structure|chemical properties|properties|do|does|work|works)\b/ig,"").trim().replace(/^of\s+/i,"").trim();
+    if(/^(?:it|this|that|they|them|these|those|something|anything|everything)$/i.test(candidate))return null;
     return candidate.length>=2&&candidate.length<=90?candidate:null;
   },
   deduce(name) {

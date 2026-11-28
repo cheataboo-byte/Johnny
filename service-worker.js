@@ -1,4 +1,4 @@
-const CACHE_NAME = "molecule-shell-v3";
+const CACHE_NAME = "molecule-shell-v8";
 const APP_SHELL = [
   "./",
   "./index.html",
@@ -7,6 +7,7 @@ const APP_SHELL = [
   "./firebase-client.js",
   "./firebase-config.js",
   "./bio-knowledge.js",
+  "./ingredient-tools.js",
   "./virtual-lab.js",
   "./science-api-client.js",
   "./manifest.webmanifest",

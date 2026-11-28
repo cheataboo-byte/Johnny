@@ -18,7 +18,11 @@ Then open `http://localhost:8000`. Real push notifications require HTTPS in depl
 
 The app's built-in guide combines curated compounds, everyday product examples, and concept explanations. BioBot is a deterministic, rule-based educational guide, not a generative AI or a substitute for professional advice. It can compare known entries and make cautious name-based deductions; a deduction is not chemical identification.
 
-When a named chemical is not in the local guide, BioBot can query the public NIH PubChem PUG REST API for database properties and a structure image. That lookup sends the chemical name to PubChem and requires an internet connection. Questions and chat transcripts are not saved; signed-in users' topic keys (such as a canonical compound or product category) are saved to personalize the science spotlight. Do not enter personal or sensitive information in chat.
+The Molecule Tools page adds a PubChem-backed structure visualizer, curated functional-group and polarity notes, ingredient interaction flags, side-by-side product-list comparisons, context-specific reminders, and a short local quiz. Its browser code is organized into `DATA_STORE` (curated compounds, mechanisms, product guides, rules, and quiz facts), `LOGIC_ENGINE` (normalization, context resolution, comparisons, and bounded public lookups), `STATE_MANAGER` (recent chat messages, active visualizer molecule, and UI state), and `UI_RENDERER` (accessible page behavior). PubChem lookups send an extracted compound name to NIH PubChem; if unavailable, the app may send a short extracted topic (not chat history) to Wikipedia's public API. If either lookup or the structure image is unavailable, the page uses local facts where available and marks its fallback group diagram as illustrative rather than an exact structure. Interaction flags are intentionally limited and cannot establish finished-product compatibility or personal suitability.
+
+The BioBot checks the last five in-memory chat messages, the latest scan, and the active visualizer molecule to resolve follow-up references. It then uses curated compound, concept, mechanism, and product-guide data; for unmatched topics, it can look up an extracted compound with PubChem or a short topic with Wikipedia; finally it gives a cautious, context-aware next step rather than inventing product contents or personal-safety claims. The bot is a deterministic educational guide, not a general-purpose AI or a substitute for authoritative sources or qualified professional advice. Chat history stays in browser memory and is not sent to an AI service; a short extracted lookup topic may be sent to the named public reference API.
+
+When a named chemical is not in the local guide, BioBot can query the public NIH PubChem PUG REST API for database properties and a structure image. For other unmatched questions, it can query Wikipedia's public search and summary endpoints using only a short extracted topic. These requests require an internet connection; do not enter personal or sensitive information in chat. Questions and chat transcripts are not saved; signed-in users' topic keys (such as a canonical compound or product category) are saved to personalize the science spotlight.
 
 The Virtual Reaction & Formulation Lab is a visual simulation, not a procedure or measurement device. It only calculates an idealized CO₂ gas volume from hypothetical 1:1 mole inputs; pH, temperature change, real reaction rate, and real yields are not predicted. Bleach with acids or ammonia and strong acid/base pairings are blocked without equations, quantities, yields, or gas animations. Never perform hazardous mixtures in real life.
 
@@ -106,7 +110,8 @@ The deployed `deliverAnnouncement` function creates an in-app notification for o
 
 - `index.html` — app layout and accessible forms
 - `styles.css` — responsive UI; Khmer text uses Noto Sans Khmer with local fallbacks
-- `app.js` — analyzer, personalization, account/settings UI, and app behavior
+- `app.js` — analyzer, personalization, account/settings UI, conversational guide, and app behavior
+- `ingredient-tools.js` — four-layer Molecule Tools data, logic, state, and UI
 - `bio-knowledge.js` — curated compounds, everyday-object and concept guides, cautious name deductions, and PubChem lookup
 - `virtual-lab.js` — virtual-only reagent models, safety lockouts, and canvas animation
 - `science-api-client.js`, `python-api/` — validated optional Python CO₂ model, Cloud Run container, and unit tests

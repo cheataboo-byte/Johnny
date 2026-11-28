@@ -16,8 +16,9 @@ import {
   enableBrowserPush, listenToForegroundPush, resendVerificationEmail, refreshEmailVerification, requestAccountDeletion,
   exportAccountData, clearPushDevice
 } from "./firebase-client.js";
-import {extendedEntries,everydayObjects,bioConcepts,ChemicalResolver} from "./bio-knowledge.js";
+import {extendedEntries,everydayObjects,bioConcepts} from "./bio-knowledge.js";
 import {initializeVirtualLab} from "./virtual-lab.js";
+import {initializeIngredientTools,LOGIC_ENGINE,STATE_MANAGER} from "./ingredient-tools.js";
 let activeNotifications=[];
 let foregroundMessageUnsubscribe=null;
 let deferredInstallPrompt=null;
@@ -289,11 +290,20 @@ const BioBotBrain = (() => {
     }
     return null;
   }
-  async function answer(question,labContext=null,followUp=null){
+  /* Answers in order: contextual memory, curated local knowledge, public topic APIs, then a grounded fallback. */
+  async function answer(question,labContext=null,followUp=null,toolContext=null,chatContext=null){
     const bot=BotProfile.current(),academic=bot.tone==="academic";
     if(followUp?.topicKey){
-      const contextualAnswer=answerFollowUp(followUp.topicKey,followUp.aspect);
-      if(contextualAnswer)return contextualAnswer;
+      const savedFollowUp=answerFollowUp(followUp.topicKey,followUp.aspect);
+      if(savedFollowUp)return savedFollowUp;
+    }
+    if(toolContext?.type==="interaction"&&typeof toolContext.summary==="string"){
+      const lead=academic?"Interpretation of the checker output:":"Let's unpack what the checker found:";
+      return {text:`${lead}\n${toolContext.summary}\n\nThese are limited label-level rules, not a complete compatibility or personal-safety assessment. Concentration, finished-product pH, formulation, directions, and individual response may change the picture. What ingredient or note would you like to explore further?\n\n${t("chatDisclaimer")}`,topicKey:"question:tool-interaction",domain:"ingredient interactions"};
+    }
+    if(toolContext?.type==="comparison"&&typeof toolContext.summary==="string"){
+      const lead=academic?"Side-by-side ingredient summary:":"Here's the comparison at a glance:";
+      return {text:`${lead}\n${toolContext.summary}\n\nShared names indicate label overlap only; unique ingredients do not establish which product is more effective, safer, or suitable for you. Product concentrations and complete formulations are not known. Which ingredient would you like to examine more closely?\n\n${t("chatDisclaimer")}`,topicKey:"question:tool-comparison",domain:"product comparison"};
     }
     if(labContext){
       const values={contents:labContext.contents.join(", ")||t("labNothingSelected"),type:labContext.reactionType,
@@ -303,6 +313,8 @@ const BioBotBrain = (() => {
       const text=t("labContextAnswer").replace(/\{(\w+)\}/g,(match,key)=>values[key]??match);
       return {text:`${text}\n\n${t("disclaimerGeneral")}\n\n${t("chatDisclaimer")}`,topicKey:"lab:virtual-reaction",domain:"laboratory simulation"};
     }
+    const contextualAnswer=LOGIC_ENGINE.resolveFollowUpContext({question,...(chatContext||{})});
+    if(contextualAnswer)return {text:`${contextualAnswer.text}\n\n${t("chatDisclaimer")}`,topicKey:`context:${normalize(contextualAnswer.topic)}`,domain:"contextual biochemistry"};
     if(/^(?:(?:hi|hello|hey)\b|សួស្តី)/i.test(question.trim())){
       return {text:t("welcomeBot"),topicKey:"question:greeting",domain:"general"};
     }
@@ -333,26 +345,13 @@ const BioBotBrain = (() => {
       const entry=found[0],text=renderedEntry(entry,academic);
       return {text:`${text}\n\n${disclaimerFor(entry.domain)}`,topicKey:`chemical:${entry.name}`,domain:entry.domain};
     }
-    const candidate=ChemicalResolver.extractCandidate(question);
-    if(candidate){
-      const deduction=ChemicalResolver.deduce(candidate);
-      const deductionText=t("answerDeduction").replace("{name}",candidate).replace("{className}",deduction.className).replace("{detail}",deduction.detail);
-      try{
-        const result=await ChemicalResolver.fetchPubChem(candidate);
-        if(!result.found)return {text:`${t("answerPubChemMissing").replace("{name}",candidate).replace("{deduction}",deductionText)}\n\n${disclaimerFor("general",t("disclaimerPubChem"))}`,topicKey:`unknown:${normalize(candidate)}`,domain:"unclassified"};
-        const record=result.record,values={name:candidate,formula:record.MolecularFormula||"Not provided",
-          weight:record.MolecularWeight||"Not provided",iupac:record.IUPACName||"Not provided",cid:record.CID||"Not provided"};
-        const text=t("answerPubChem").replace(/\{(\w+)\}/g,(match,key)=>values[key]??match);
-        return {text:`${text}\n\n${deductionText}\n\n${disclaimerFor("general",t("disclaimerPubChem"))}`,
-          imageUrl:result.imageUrl,imageAlt:`PubChem 2D structure for ${candidate}`,
-          sourceUrl:record.CID?`https://pubchem.ncbi.nlm.nih.gov/compound/${encodeURIComponent(String(record.CID))}`:"",
-          topicKey:`chemical:${normalize(candidate)}`,domain:"chemical lookup"};
-      }catch(error){
-        const message=error.name==="AbortError"?"request timed out":error.message||"network error";
-        return {text:`${t("answerPubChemError").replace("{name}",candidate).replace("{error}",message).replace("{deduction}",deductionText)}\n\n${disclaimerFor("general",t("disclaimerPubChem"))}`,topicKey:`unknown:${normalize(candidate)}`,domain:"unclassified"};
-      }
-    }
-    return {text:`${t("conceptUnknown")}\n\n${t("chatDisclaimer")}`,topicKey:"question:general",domain:"general"};
+    const pipelineResult=await LOGIC_ENGINE.resolveAskAnything({question,context:chatContext||{},language});
+    const sourceDisclaimer=pipelineResult.sourceUrl?.includes("pubchem.ncbi.nlm.nih.gov")
+      ?t("disclaimerPubChem")
+      :pipelineResult.stage==="api"?"A public reference summary is a starting point, not a complete or product-specific safety assessment.":"";
+    return {text:`${pipelineResult.text}\n\n${disclaimerFor(pipelineResult.domain||"general",sourceDisclaimer)}`,
+      imageUrl:pipelineResult.imageUrl||"",imageAlt:pipelineResult.imageAlt||"",
+      sourceUrl:pipelineResult.sourceUrl||"",topicKey:`${pipelineResult.stage}:${normalize(pipelineResult.topic)}`,domain:pipelineResult.domain||"general"};
   }
   return {answer};
 })();
@@ -666,13 +665,13 @@ function applyLanguage(){
   $$("[data-i18n-placeholder]").forEach(el=>{const key=el.dataset.i18nPlaceholder;if(translations[language][key])el.placeholder=translations[language][key];});
   $("#langToggle").textContent=language==="en"?"ខ្មែរ":"English";
   const active=$(".page.active"),page=active?.id.replace("page-","");
-  $("#crumbCurrent").textContent=t(({recommendations:"forYouNav",bot:"profile",algorithms:"howWorks",settings:"settings",lab:"virtualLab",analyzer:"analyzer"})[page]||"analyzer");
+  $("#crumbCurrent").textContent=page==="tools"?"Molecule Tools":t(({recommendations:"forYouNav",bot:"profile",algorithms:"howWorks",settings:"settings",lab:"virtualLab",analyzer:"analyzer"})[page]||"analyzer");
   renderAll();
 }
 function switchPage(page){
   $$(".page").forEach(el=>el.classList.toggle("active",el.id==="page-"+page));
   $$(".nav [data-page]").forEach(el=>el.classList.toggle("active",el.dataset.page===page));
-  $("#crumbCurrent").textContent=t(({recommendations:"forYouNav",bot:"profile",algorithms:"howWorks",settings:"settings",lab:"virtualLab",analyzer:"analyzer"})[page]||"analyzer");
+  $("#crumbCurrent").textContent=page==="tools"?"Molecule Tools":t(({recommendations:"forYouNav",bot:"profile",algorithms:"howWorks",settings:"settings",lab:"virtualLab",analyzer:"analyzer"})[page]||"analyzer");
   if(virtualLab)virtualLab.setActive(page==="lab");
   if(page==="recommendations")renderRecommendations();
   if(page==="bot")renderBot();
@@ -809,7 +808,7 @@ function addBubble(text,who,mediaUrl="",mediaAlt=""){
 }
 if(!$("#chatMessages").children.length)addBubble(t("welcomeBot"),"bot");
 function recordChemTopic(topicKey){
-  if(!/^(?:chemical|unknown|object|concept|compare|lab|scan):/.test(topicKey)||!currentUser())return;
+  if(!/^(?:chemical|unknown|object|concept|compare|lab|scan|context|local|api|fallback):/.test(topicKey)||!currentUser())return;
   AuthManager.update(user=>{user.chemTopicHistory=[...(user.chemTopicHistory||[]),topicKey].slice(-30);});
   renderRecommendations();renderNotifications();
 }
@@ -836,9 +835,10 @@ function renderBotFollowUps(bubble,result){
   if(result.sourceUrl){
     try{
       const sourceUrl=new URL(result.sourceUrl);
-      if(sourceUrl.protocol==="https:"&&sourceUrl.hostname==="pubchem.ncbi.nlm.nih.gov"){
+      if(sourceUrl.protocol==="https:"&&["pubchem.ncbi.nlm.nih.gov","en.wikipedia.org","km.wikipedia.org"].includes(sourceUrl.hostname)){
         const link=document.createElement("a");
-        link.href=sourceUrl.href;link.target="_blank";link.rel="noopener noreferrer";link.textContent=t("sourcePubChem");
+        link.href=sourceUrl.href;link.target="_blank";link.rel="noopener noreferrer";
+        link.textContent=sourceUrl.hostname.includes("wikipedia.org")?"Wikipedia":t("sourcePubChem");
         source.appendChild(link);
       }else source.textContent=t("sourceLocalGuide");
     }catch(error){
@@ -848,20 +848,37 @@ function renderBotFollowUps(bubble,result){
   }else source.textContent=t("sourceLocalGuide");
   bubble.append(source,actions);
 }
-async function sendChat(question,labContext=null,followUp=null){
+/* Records this turn in volatile memory and supplies the current scan and molecule for contextual follow-ups. */
+async function sendChat(question,labContext=null,followUp=null,toolContext=null){
   const message=String(question||"").trim();if(!message)return;
+  LOGIC_ENGINE.rememberConversationMessage("user",message);
+  const chatContext={
+    scan:lastAnalysis||currentUser()?.scans?.[0]||null,
+    activeMolecule:STATE_MANAGER.molecule,
+    recentMessages:STATE_MANAGER.recentMessages,
+    context:STATE_MANAGER.context
+  };
   addBubble(message,"user");const pending=addBubble(t("chatThinking"),"bot");
   try{
-    const result=await BioBotBrain.answer(message,labContext,followUp);
+    const result=await BioBotBrain.answer(message,labContext,followUp,toolContext,chatContext);
     pending.remove();
     const reply=addBubble(result.text,"bot",result.imageUrl||"",result.imageAlt||"");
     renderBotFollowUps(reply,result);
+    LOGIC_ENGINE.rememberConversationMessage("assistant",result.text);
     if(result.topicKey)recordChemTopic(result.topicKey);
   }catch(error){
     pending.textContent=t("chatAnswerFailed");
+    LOGIC_ENGINE.rememberConversationMessage("assistant",pending.textContent);
     console.error("BioBot could not answer the question.",error);
   }
 }
+document.addEventListener("molecule:ask-bot",event=>{
+  const details=event.detail;
+  const prompt=details?.prompt;
+  if(typeof prompt!=="string"||!prompt.trim())return;
+  switchPage("bot");
+  sendChat(prompt,null,null,details);
+});
 $("#chatForm").addEventListener("submit",e=>{e.preventDefault();const input=$("#chatInput"),question=input.value.trim();input.value="";sendChat(question);});
 $("#chatSuggestions").addEventListener("click",event=>{const button=event.target.closest("[data-chat-prompt]");if(button)sendChat(button.dataset.chatPrompt);});
 function askAboutLab(snapshot){
@@ -1028,6 +1045,7 @@ async function initializeApplication(){
     console.error("Virtual reaction lab could not initialize.",error);
     showToast(t("labInitError"));
   }
+  initializeIngredientTools();
   applyLanguage();
   renderAll();
 }
